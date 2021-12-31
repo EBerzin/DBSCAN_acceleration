@@ -16,7 +16,7 @@ using namespace std;
 int main(int argc, char *argv[]) {
 
 
-  //Processing inputs
+  //Processing inputs                                                                                                                                                                             
   cl_uint max_samples = 0;
   cl_uint nsectors = 0;
   cl_float eps = 0;
@@ -36,7 +36,8 @@ int main(int argc, char *argv[]) {
     if(arg == "--data" && i_arg+1 < argc)            data_fname    = argv[i_arg+1];
   }
 
-  // Validating inputs
+
+  // Validating inputs                                                                                                                                                                            
   if(max_samples == 0) {
     cout << "ERROR: Enter the number of samples to process" << endl;
     return 1;
@@ -61,7 +62,7 @@ int main(int argc, char *argv[]) {
     cout << "ERROR: Enter a data filename" << endl;
     return 1;
   }
-  
+
   cl_int err;
 
   // Setting up Platform Information
@@ -70,6 +71,7 @@ int main(int argc, char *argv[]) {
   checkErr(err, "Get Platform List");
   checkErr(PlatformList.size()>=1 ? CL_SUCCESS : -1, "cl::Platform::get");
   print_platform_info(&PlatformList);
+
 
   //Setup Device
   std::vector<cl::Device> DeviceList;
@@ -90,36 +92,36 @@ int main(int argc, char *argv[]) {
   cl::Buffer bufY(myContext, CL_MEM_READ_ONLY, max_samples * sizeof(cl_float));
   cl::Buffer bufDists(myContext, CL_MEM_READ_ONLY, max_samples * max_samples * sizeof(cl_float));
 
-
   //Create buffers for intermediate values
-  cl::Buffer bufVa1(myContext, CL_MEM_READ_WRITE, max_samples * sizeof(cl_uint));
-  cl::Buffer bufNeighbIdx(myContext, CL_MEM_READ_WRITE, max_samples * max_samples * sizeof(cl_uint));  
+  cl::Buffer bufNeighbCount(myContext, CL_MEM_READ_WRITE, max_samples * sizeof(cl_uint));
+  cl::Buffer bufNeighbIdx(myContext, CL_MEM_READ_WRITE, max_samples * max_samples * sizeof(cl_uint));
   cl::Buffer bufIsCore(myContext, CL_MEM_READ_WRITE, max_samples * sizeof(cl_uint));
-  cl::Buffer bufVisited(myContext, CL_MEM_READ_WRITE, max_samples * sizeof(cl_uint));
-  cl::Buffer bufLabels(myContext, CL_MEM_READ_WRITE, max_samples * sizeof(cl_int));
 
   cl_float X[max_samples]  __attribute__ ((aligned (64)));
   cl_float Y[max_samples]  __attribute__ ((aligned (64)));
   cl_float dist_matrix[max_samples * max_samples] __attribute__ ((aligned (64)));
 
-  cl_uint va1[max_samples]  __attribute__ ((aligned (64)));
+
+  cl_uint neighbCount[max_samples]  __attribute__ ((aligned (64)));
   cl_uint is_core[max_samples]  __attribute__ ((aligned (64)));
   cl_uint neighbIdx[max_samples * max_samples]  __attribute__ ((aligned (64)));
   cl_uint visited[max_samples]  __attribute__ ((aligned (64)));
   cl_int labels[max_samples]  __attribute__ ((aligned (64)));
-
+  cl_int added_to_queue[max_samples] __attribute__ ((aligned (64)));
 
   //Read input data
   vector<float> total_times;
-  string ptmin[] = {"0p6", "0p7", "0p8", "0p9", "1", "1p5", "2"};
+  
 
+  string ptmin[] = {"0p6", "0p7", "0p8", "0p9", "1", "1p5", "2"};
   for(int s = 0; s < nsectors; s++) {
 
     cl_uint vectorSize = 0;
     int i = 0;
+
     string inFileName;
-    if(!precomputed) { 
-      inFileName =  data_fname; //+ "_s" + to_string(s) + "_ptmin1GeV.txt";
+    if(!precomputed) {
+      inFileName =  data_fname; //+ "_s" + to_string(s) + "_ptmin1GeV.txt"; 
     }
     else {
       inFileName = "/scratch/gpfs/eberzin/tracker_hits_dists/" + dist_matrix_fname + ptmin[s] + "GeV";
@@ -131,26 +133,26 @@ int main(int argc, char *argv[]) {
       int total_count = 0;
       while(!inFile.eof()) {
 	i = vectorSize;
-	labels[i] = -1;
-	va1[i] = 0;
+        labels[i] = -1;
+	neighbCount[i] = 0;
 	is_core[i] = 0;
-	visited[i] = 0;
+        visited[i] = 0;
+	added_to_queue[i] = 0;
 	if(!precomputed) {
-	  inFile >> X[i];
-	  inFile >> Y[i];
-	}
-	else {
-	  
+          inFile >> X[i];
+          inFile >> Y[i];
+        }
+        else {
 	  string line;
-          getline(inFile, line);
-          istringstream line_data(line);
-
-          string hit_dist;
-          while(line_data >> hit_dist) {
-            dist_matrix[total_count] = stof(hit_dist);
-            total_count++;
-          }
-	}
+	  getline(inFile, line);
+	  istringstream line_data(line);
+	  
+	  string hit_dist;
+	  while(line_data >> hit_dist) {
+	    dist_matrix[total_count] = stof(hit_dist);
+	    total_count++;
+	  }
+        }
 	vectorSize++;
       }
       inFile.close(); // Close input file
@@ -158,13 +160,8 @@ int main(int argc, char *argv[]) {
     else { //Error message
       cerr << "Can't find input file " << inFileName << endl;
     }
+    cout << endl;
     vectorSize--;
-
-    cout << "Read Data" << endl;
-    
-
-    //Write to buffers
-    
     if(!precomputed) {
       err = myqueue.enqueueWriteBuffer(bufX, CL_TRUE, 0, vectorSize * sizeof(cl_float),X); checkErr(err, "WriteBuffer 1");
       err = myqueue.enqueueWriteBuffer(bufY, CL_TRUE, 0, vectorSize * sizeof(cl_float),Y); checkErr(err, "WriteBuffer 2");
@@ -173,25 +170,22 @@ int main(int argc, char *argv[]) {
       err = myqueue.enqueueWriteBuffer(bufDists, CL_TRUE, 0, vectorSize * vectorSize * sizeof(cl_float),dist_matrix); checkErr(err, "WriteBuffer 1");
     }
 
-    err = myqueue.enqueueWriteBuffer(bufVa1, CL_TRUE, 0, vectorSize * sizeof(cl_uint),va1); checkErr(err, "WriteBuffer 3");
+    err = myqueue.enqueueWriteBuffer(bufNeighbCount, CL_TRUE, 0, vectorSize * sizeof(cl_uint),neighbCount); checkErr(err, "WriteBuffer 3");
     err = myqueue.enqueueWriteBuffer(bufIsCore, CL_TRUE, 0, vectorSize * sizeof(cl_uint),is_core); checkErr(err, "WriteBuffer 4");
     err = myqueue.enqueueWriteBuffer(bufNeighbIdx, CL_TRUE, 0, vectorSize * vectorSize * sizeof(cl_uint),neighbIdx); checkErr(err, "WriteBuffer 5");
-
-    cout << "Wrote to buffers" << endl;
     
-    //Creating kernels
     const char *kernel_name_make_graph_1;
-    if (!precomputed) kernel_name_make_graph_1 = "radius_neighbors_step1";
+    if (!precomputed) kernel_name_make_graph_1 = "radius_neighbors";
     else kernel_name_make_graph_1 = "radius_neighbors_dists";
-    const char *kernel_name_bfs = "breadth_first_search";
 
     // Creating Binaries
-    std::ifstream aocx_stream("g_dbscan.aocx", std::ios::in|std::ios::binary);
-    checkErr(aocx_stream.is_open() ? CL_SUCCESS:-1, "g_dbscan.aocx");
+    std::ifstream aocx_stream("NeighborKernel.aocx", std::ios::in|std::ios::binary);
+    checkErr(aocx_stream.is_open() ? CL_SUCCESS:-1, "NeighborKernel.aocx");
     std::string prog(std::istreambuf_iterator<char>(aocx_stream), (std::istreambuf_iterator<char>()));
     cl::Program::Binaries mybinaries(DeviceList.size(), std::make_pair(prog.c_str(), prog.length()));
+    //cl::Program::Binaries mybinaries{std::vector<unsigned char>(prog.begin(), prog.end())};
     cout << "Created Binaries" << endl;
-    
+
 
     // Create the Program from the AOCX file.
     cl::Program program(myContext, DeviceList, mybinaries, NULL, &err);
@@ -202,18 +196,14 @@ int main(int argc, char *argv[]) {
     err= program.build(DeviceList);
     checkErr(err, "Build Program");
 
-
     // create the kernel
     cl::Kernel kernelGraph1(program, kernel_name_make_graph_1, &err);
     checkErr(err, "Kernel Creation 1 ");
 
-    cl::Kernel kernelBFS(program, kernel_name_bfs, &err);
-    checkErr(err, "Kernel Creation 2 ");
-
     chrono::time_point<std::chrono::high_resolution_clock> start = chrono::high_resolution_clock::now();
 
+    cout << "Launched Kernel" << endl;
 
-    //Setting Kernel Arguments for neighbor search
     if(!precomputed) {
       err = kernelGraph1.setArg(0, bufX); checkErr(err, "Arg 0");
       err = kernelGraph1.setArg(1, bufY); checkErr(err, "Arg 1");
@@ -221,76 +211,48 @@ int main(int argc, char *argv[]) {
     else {
       err = kernelGraph1.setArg(0, bufDists); checkErr(err, "Arg 0");
     }
-    err = kernelGraph1.setArg(2-precomputed, bufVa1); checkErr(err, "Arg 2");
+
+    err = kernelGraph1.setArg(2-precomputed, bufNeighbCount); checkErr(err, "Arg 2");
     err = kernelGraph1.setArg(3-precomputed, bufNeighbIdx); checkErr(err, "Arg 4");
     err = kernelGraph1.setArg(4-precomputed, bufIsCore); checkErr(err, "Arg 5");
     err = kernelGraph1.setArg(5-precomputed, vectorSize); checkErr(err, "Arg 6");
     err = kernelGraph1.setArg(6-precomputed, eps); checkErr(err, "Arg 7");
     err = kernelGraph1.setArg(7-precomputed, min_samps); checkErr(err, "Arg 8");
-
+    
     err = myqueue.enqueueNDRangeKernel(kernelGraph1, cl::NullRange, cl::NDRange(vectorSize), cl::NullRange, NULL);
     checkErr(err, "Kernel Execution");
     myqueue.finish();
 
-    err= myqueue.enqueueReadBuffer(bufIsCore, CL_TRUE, 0, vectorSize * sizeof(cl_uint),is_core);
+    err= myqueue.enqueueReadBuffer(bufNeighbCount, CL_TRUE, 0, vectorSize * sizeof(cl_uint),neighbCount);
+    err= myqueue.enqueueReadBuffer(bufNeighbIdx, CL_TRUE, 0, vectorSize * vectorSize * sizeof(cl_uint),neighbIdx);
 
-    cl::Buffer bufXa(myContext, CL_MEM_READ_WRITE, vectorSize * sizeof(cl_uint));
-    cl::Buffer bufFa(myContext, CL_MEM_READ_WRITE, vectorSize * sizeof(cl_uint));
-
-    //Setting the BFS kernel arguments that remain unchanged
-    err = kernelBFS.setArg(0, bufVa1); checkErr(err, "Arg 0");
-    err = kernelBFS.setArg(1, bufNeighbIdx); checkErr(err, "Arg 1");
-    err = kernelBFS.setArg(4, bufIsCore); checkErr(err, "Arg 4");
-    err = kernelBFS.setArg(5, vectorSize); checkErr(err, "Arg 5");
-
+    //Performing the labelling step on the CPU
     int clusterID = 0;
+
     for(int i = 0; i < vectorSize; i++) {
-      if (!visited[i] && is_core[i]) {
+      if (!visited[i] && neighbCount[i] >= min_samps) {
 	visited[i] = 1;
-	labels[i] = clusterID;
-	
-	//BFS
-	cl_uint* Xa = new cl_uint[vectorSize];
-	cl_uint* Fa = new cl_uint[vectorSize];
-	memset(Xa, 0, sizeof(cl_uint)* vectorSize);
-	memset(Fa, 0, sizeof(cl_uint)* vectorSize);
-	Fa[i] = 1;
-	err = myqueue.enqueueWriteBuffer(bufXa, CL_TRUE, 0, vectorSize * sizeof(cl_uint),Xa); checkErr(err, "WriteBuffer 1");
-	err = myqueue.enqueueWriteBuffer(bufFa, CL_TRUE, 0, vectorSize * sizeof(cl_uint),Fa); checkErr(err, "WriteBuffer 2");
-	int countFa = 1;
+        labels[i] = clusterID;
 
-	err = kernelBFS.setArg(2, bufFa); checkErr(err, "Arg 2");
-	err = kernelBFS.setArg(3, bufXa); checkErr(err, "Arg 3");
+	vector<int> labelled;
+	labelled.push_back(i);
 
-	while(countFa > 0) {
-	  //Lauching parallel bfs
-	  err = myqueue.enqueueNDRangeKernel(kernelBFS, cl::NullRange, cl::NDRange(vectorSize), cl::NullRange, NULL);
-	  checkErr(err, "Kernel Execution");
-	  myqueue.finish();
-
-	  err= myqueue.enqueueReadBuffer(bufFa, CL_TRUE, 0, vectorSize * sizeof(cl_uint),Fa);
-	  int empty = 1;
-	  for(int k = 0; k < vectorSize; k++) {
-	    if(Fa[k] == 1) {
-	      empty = 0;
-	      break;
+	while(labelled.size() != 0) {
+	  int hit = labelled.back();
+	  labelled.pop_back();
+	  if(neighbCount[hit] >= min_samps) {
+	    for(int j = 0; j < neighbCount[hit]; j++) {
+	      int nidx = neighbIdx[hit*vectorSize + j];
+	      if (visited[nidx] == 0) {
+		visited[nidx] = 1;
+		labelled.push_back(nidx);
+		labels[nidx] = clusterID;
+	      }
 	    }
-	  }
-	  if(empty) {countFa = 0;}
+	  } 
 	}
-
-	err= myqueue.enqueueReadBuffer(bufXa, CL_TRUE, 0, vectorSize * sizeof(cl_uint),Xa);
-	for(int v = 0; v < vectorSize; v++) {
-	  if(Xa[v] && !visited[v]) {
-	    labels[v] = clusterID;
-	    visited[v] = 1;
-	  }
-	}
-	clusterID++;
-	delete[] Xa;
-	delete[] Fa;
+       clusterID++;
       }
-
     }
 
     chrono::time_point<std::chrono::high_resolution_clock> stop = chrono::high_resolution_clock::now();
@@ -298,11 +260,9 @@ int main(int argc, char *argv[]) {
 
     cout << "TIME: " << duration.count() << endl;
     total_times.push_back(duration.count());
+    
 
-    err=myqueue.finish();
-    checkErr(err, "Finish Queue");
-
-    //Printing output labels to a file
+    //Printing output labels to a file                                                                                                                                                       
     ofstream myfile("output_labels/" + dist_matrix_fname + ptmin[s] + "GeV_labels.txt");
     if (myfile.is_open())
       {
@@ -312,15 +272,14 @@ int main(int argc, char *argv[]) {
         myfile.close();
       }
     else cout << "Unable to open file";
+
   }
 
-  //Printing output times to a file 
-  ofstream output_file2("output_times/" + dist_matrix_fname + "_times_parallel.txt");
-  ostream_iterator<float> output_iterator2(output_file2, "\n");
-  std::copy(total_times.begin(), total_times.end(), output_iterator2);
-
+  //Printing output times to a file
+   ofstream output_file2("output_times/" + dist_matrix_fname + "_times.txt");                   
+   ostream_iterator<float> output_iterator2(output_file2, "\n");
+   std::copy(total_times.begin(), total_times.end(), output_iterator2); 
 
 
   return 1;
-
 }
