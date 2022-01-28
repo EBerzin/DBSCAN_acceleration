@@ -1,6 +1,7 @@
 # DBSCAN_acceleration
 
 This reposity contains all code written for my Fall 2021 JP: Accelerating DBSCAN for GNN-based Track Reconstruction
+
 As denoted in the paper:
 
 Implementation 2: DBSCAN_FPGA_CPU
